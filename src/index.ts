@@ -1,15 +1,15 @@
-import { DurableObject } from "cloudflare:workers"
-import { until } from "@/utils/until"
 import puppeteer, {
   type Browser as PuppeteerBrowser,
 } from "@cloudflare/puppeteer"
 import { zValidator } from "@hono/zod-validator"
+import { DurableObject } from "cloudflare:workers"
 import { Hono } from "hono"
 import { StatusCodes } from "http-status-codes"
 import { z } from "zod"
-import TurndownService from "turndown"
-import { createDocument } from "@mixmark-io/domino"
+import { BrowserError, ReadabilityError, until } from "@/utils/error"
 import { Readability } from "@mozilla/readability"
+import { parseHTML } from "linkedom"
+import TurndownService from "turndown"
 
 type Bindings = {
   [key in keyof CloudflareBindings]: CloudflareBindings[key]
@@ -49,6 +49,12 @@ app.get(
     await browser.scrape(url)
 
     const response = await c.env.CACHE.get(`scrape:${url}`)
+
+    if (!response) {
+      return c.text("Error: No response from scrape", {
+        status: StatusCodes.INTERNAL_SERVER_ERROR,
+      })
+    }
 
     return c.text(response, { status: StatusCodes.OK })
   },
@@ -93,6 +99,12 @@ app.get(
       type: "arrayBuffer",
     })
 
+    if (!response) {
+      return c.text("Error: No response from screenshot", {
+        status: StatusCodes.INTERNAL_SERVER_ERROR,
+      })
+    }
+
     return c.body(response, {
       status: StatusCodes.OK,
       headers: { "Content-Type": "image/png" },
@@ -105,9 +117,10 @@ export class Browser extends DurableObject<Bindings> {
   env: CloudflareBindings
   keptAliveInSeconds: number
   storage: DurableObjectStorage
-  browser?: PuppeteerBrowser
+  browser?: PuppeteerBrowser | null
 
   private KEEP_BROWSER_ALIVE_IN_SECONDS = 60
+  private MAX_RETRIES = 3
 
   constructor(ctx: DurableObjectState, env: CloudflareBindings) {
     super(ctx, env)
@@ -122,107 +135,137 @@ export class Browser extends DurableObject<Bindings> {
   }
 
   async screenshot(url: string) {
-    // If there's a browser session open, re-use it
-    if (!this.browser || !this.browser.isConnected()) {
-      console.log("Browser DO: Starting new instance")
-
-      const [result, error] = await until(() =>
-        puppeteer.launch(this.env.BROWSER_INSTANCE),
-      )
-
-      if (error) {
-        console.log(
-          "Browser DO: Could not start browser instance. Error:",
-          error,
-        )
-
-        return
-      }
-
-      this.browser = result
-    }
+    const browser = await this.ensureBrowser()
 
     // Reset keptAlive after each call to the DO
-    this.keptAliveInSeconds = 0
+    this.ensureKeepAlive()
 
-    const page = await this.browser.newPage()
+    const page = await browser.newPage()
 
-    await page.goto(url)
+    await page.goto(url, { waitUntil: "networkidle0" })
 
-    const img = await page.screenshot({ fullPage: true })
+    const image = await page.screenshot({ fullPage: true })
 
-    await this.env.CACHE.put(`screenshot:${url}`, img, {
+    await this.env.CACHE.put(`screenshot:${url}`, image, {
       expirationTtl: 60 * 60 * 24, // One day
     })
 
     await page.close()
 
     // Reset keptAlive after performing tasks to the DO.
-    this.keptAliveInSeconds = 0
+    this.ensureKeepAlive()
 
     // set the first alarm to keep DO alive
-    const currentAlarm = await this.storage.getAlarm()
+    this.ensureBrowserAlarm()
 
-    if (currentAlarm == null) {
-      console.log("Browser DO: setting alarm")
-      const TEN_SECONDS = 10 * 1000
-
-      await this.storage.setAlarm(Date.now() + TEN_SECONDS)
-    }
-
-    await this.env.CACHE.put(`scrape:${url}`, img, {
-      expirationTtl: 60 * 60 * 24, // One day
-    })
-
-    return img
+    return
   }
 
   async scrape(url: string) {
-    // If there's a browser session open, re-use it
-    if (!this.browser || !this.browser.isConnected()) {
-      console.log("Browser DO: Starting new instance")
-
-      const [result, error] = await until(() =>
-        puppeteer.launch(this.env.BROWSER_INSTANCE),
-      )
-
-      if (error) {
-        console.log(
-          "Browser DO: Could not start browser instance. Error:",
-          error,
-        )
-
-        return
-      }
-
-      this.browser = result
-    }
+    const browser = await this.ensureBrowser()
 
     // Reset keptAlive after each call to the DO
-    this.keptAliveInSeconds = 0
+    this.ensureKeepAlive()
 
-    const page = await this.browser.newPage()
+    const page = await browser.newPage()
 
     await page.goto(url, { waitUntil: "networkidle0" })
 
     const html = await page.content()
-    const document = createDocument(html)
-    const turndown = new TurndownService()
-    const readability = new Readability(document)
-    // const text = readability.parse()?.content
-    const text = await turndown.turndown(document)
-    // const text = await turndown.turndown(readability.parse()!.content)
-
-    await this.env.CACHE.put(`scrape:${url}`, text, {
-      expirationTtl: 60 * 60 * 24, // One day
-    })
+    const markdown = this.getMarkdown(html)
 
     await page.close()
 
+    await this.env.CACHE.put(`scrape:${url}`, markdown, {
+      expirationTtl: 60 * 60 * 24, // One day
+    })
+
     // Reset keptAlive after performing tasks to the DO.
-    this.keptAliveInSeconds = 0
+    this.ensureKeepAlive()
 
     // set the first alarm to keep DO alive
+    this.ensureBrowserAlarm()
+
+    return true
+  }
+
+  private getMarkdown(html: string): string {
+    const { document } = parseHTML(html)
+
+    const article = new Readability(document, {
+      // We use this serializer to return another DOM element so it can be
+      // parsed by turndown
+      serializer: (el) => el,
+    }).parse()
+
+    if (!article?.content) {
+      throw new ReadabilityError()
+    }
+
+    const turndownService = new TurndownService()
+
+    const markdown = turndownService.turndown(article.content)
+
+    return markdown
+  }
+
+  private async ensureBrowser(): Promise<PuppeteerBrowser> {
+    if (this.browser?.isConnected()) return this.browser
+
+    let retries = 0
+
+    while (retries < this.MAX_RETRIES) {
+      try {
+        // @ts-expect-error - Seems there was a breaking change in the types for
+        // the browser. Needs more investigation or wait for a fix.
+        this.browser = await puppeteer.launch(this.env.MY_BROWSER)
+
+        return this.browser
+      } catch (error) {
+        console.log(
+          "Browser DO: Could not start browser instance. Error:",
+          error,
+        )
+        console.log("Retries left:", retries)
+
+        await this.closeBrowserSessions()
+
+        await new Promise((resolve) => setTimeout(resolve, 1000 * retries))
+
+        console.log
+        retries++
+      }
+    }
+
+    throw new BrowserError()
+  }
+
+  private async closeBrowserSessions() {
+    // @ts-expect-error - Seems there was a breaking change in the types for
+    // the browser. Needs more investigation or wait for a fix.
+    const sessions = await puppeteer.sessions(this.env.MY_BROWSER)
+
+    for (const session of sessions) {
+      const [error, browser] = await until(() =>
+        // @ts-expect-error - Seems there was a breaking change in the types for
+        // the browser. Needs more investigation or wait for a fix.
+        puppeteer.connect(this.env.MY_BROWSER, session.sessionId),
+      )
+
+      if (error) {
+        console.log(
+          "Browser DO: Could not close browser session. Error:",
+          error,
+        )
+
+        return
+      }
+
+      await browser.close()
+    }
+  }
+
+  private async ensureBrowserAlarm() {
     const currentAlarm = await this.storage.getAlarm()
 
     if (currentAlarm == null) {
@@ -231,8 +274,10 @@ export class Browser extends DurableObject<Bindings> {
 
       await this.storage.setAlarm(Date.now() + TEN_SECONDS)
     }
+  }
 
-    return true
+  private async ensureKeepAlive() {
+    this.keptAliveInSeconds = 0
   }
 
   async alarm() {

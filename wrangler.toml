@@ -4,7 +4,6 @@ main = "src/index.ts"
 compatibility_date = "2024-08-06"
 compatibility_flags = ["nodejs_compat"]
 
-
 # Automatically place your workloads in an optimal location to minimize latency.
 # If you are running back-end logic in a Worker, running it closer to your back-end infrastructure
 # rather than the end user may result in better performance.
@@ -33,7 +32,7 @@ mode = "smart"
 # Bind a headless browser instance running on Cloudflare's global network.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#browser-rendering
 [browser]
-binding = "BROWSER_INSTANCE"
+binding = "MY_BROWSER"
 
 # Bind a D1 database. D1 is Cloudflare’s native serverless SQL database.
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#d1-databases
