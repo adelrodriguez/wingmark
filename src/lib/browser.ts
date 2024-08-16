@@ -88,18 +88,20 @@ export class Browser extends DurableObject<CloudflareBindings> {
     const { document } = parseHTML(html)
 
     // TODO(adelrodriguez): Improve this so we can get more data from the HTML. Right now it is removing titlte
-    const article = new Readability(document, {
+    const reader = new Readability(document, {
       // We use this serializer to return another DOM element so it can be
       // parsed by turndown
       serializer: (el) => el,
       nbTopCandidates: 500,
-    }).parse()
+      charThreshold: 0,
+    })
+    const article = reader.parse()
 
     if (!article?.content) {
       throw new ReadabilityError()
     }
 
-    const turndownService = new TurndownService()
+    const turndownService = new TurndownService({ hr: "---" })
 
     const markdown = turndownService.turndown(article.content)
 
