@@ -29,34 +29,7 @@ export class Browser extends DurableObject<CloudflareBindings> {
     return new Response("Browser DO: fetch")
   }
 
-  async screenshot(url: string) {
-    const browser = await this.ensureBrowser()
-
-    // Reset keptAlive after each call to the DO
-    this.ensureKeepAlive()
-
-    const page = await browser.newPage()
-
-    await page.goto(url, { waitUntil: "networkidle0" })
-
-    const image = await page.screenshot({ fullPage: true })
-
-    await this.env.CACHE.put(`screenshot:${url}`, image, {
-      expirationTtl: 60 * 60 * 24, // One day
-    })
-
-    await page.close()
-
-    // Reset keptAlive after performing tasks to the DO.
-    this.ensureKeepAlive()
-
-    // set the first alarm to keep DO alive
-    this.ensureBrowserAlarm()
-
-    return
-  }
-
-  async scrape(url: string) {
+  async scrape(url: string): Promise<string> {
     const browser = await this.ensureBrowser()
 
     // Reset keptAlive after each call to the DO
@@ -67,13 +40,10 @@ export class Browser extends DurableObject<CloudflareBindings> {
     await page.goto(url, { waitUntil: "networkidle0" })
 
     const html = await page.content()
+
     const markdown = this.getMarkdown(html)
 
     await page.close()
-
-    await this.env.CACHE.put(`scrape:${url}`, markdown, {
-      expirationTtl: 60 * 60 * 24, // One day
-    })
 
     // Reset keptAlive after performing tasks to the DO.
     this.ensureKeepAlive()
@@ -81,13 +51,12 @@ export class Browser extends DurableObject<CloudflareBindings> {
     // set the first alarm to keep DO alive
     this.ensureBrowserAlarm()
 
-    return true
+    return markdown
   }
 
   private getMarkdown(html: string): string {
     const { document } = parseHTML(html)
 
-    // TODO(adelrodriguez): Improve this so we can get more data from the HTML. Right now it is removing titlte
     const reader = new Readability(document, {
       // We use this serializer to return another DOM element so it can be
       // parsed by turndown
