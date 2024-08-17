@@ -7,7 +7,6 @@ import { BrowserError, ReadabilityError, until } from "@/utils/error"
 import { Readability } from "@mozilla/readability"
 import { parseHTML } from "linkedom"
 import TurndownService from "turndown"
-import { parse } from "tldts"
 
 export class Browser extends DurableObject<CloudflareBindings> {
   keptAliveInSeconds: number
@@ -24,6 +23,35 @@ export class Browser extends DurableObject<CloudflareBindings> {
     this.keptAliveInSeconds = 0
   }
 
+  async scrape(url: string): Promise<string> {
+    const browser = await this.ensureBrowser()
+
+    // Reset keptAlive after each call to the DO
+    this.ensureKeepAlive()
+
+    const page = await browser.newPage()
+
+    await page.goto(url, { waitUntil: "networkidle0" })
+
+    const html = await page.content()
+
+    const markdown = this.getMarkdown(html)
+
+    await this.env.CACHE.put(`scrape:${url}`, markdown, {
+      expirationTtl: 60 * 60, // One hour
+    })
+
+    await page.close()
+
+    // Reset keptAlive after performing tasks to the DO.
+    this.ensureKeepAlive()
+
+    // set the first alarm to keep DO alive
+    this.ensureBrowserAlarm()
+
+    return markdown
+  }
+
   async crawl({
     url,
     callback,
@@ -37,6 +65,9 @@ export class Browser extends DurableObject<CloudflareBindings> {
     currentDepth: number
     limit: number
   }): Promise<void> {
+    console.log("Crawling:", url)
+    console.log("Current depth:", currentDepth)
+
     if (currentDepth >= maxDepth) {
       console.log("Crawling depth reached:", maxDepth)
       return
@@ -66,11 +97,15 @@ export class Browser extends DurableObject<CloudflareBindings> {
 
     const html = await page.content()
 
-    const markdown = await this.getMarkdown(html)
+    let markdown = await this.env.CACHE.get(`scrape:${url}`)
 
-    await this.env.CACHE.put(`scrape:${url}`, markdown, {
-      expirationTtl: 60 * 60 * 24, // One day
-    })
+    if (!markdown) {
+      markdown = await this.getMarkdown(html)
+
+      await this.env.CACHE.put(`scrape:${url}`, markdown, {
+        expirationTtl: 60 * 60, // One hour
+      })
+    }
 
     await this.env.CALLBACKS.send({ callback, markdown })
 
@@ -81,35 +116,6 @@ export class Browser extends DurableObject<CloudflareBindings> {
 
     // set the first alarm to keep DO alive
     this.ensureBrowserAlarm()
-  }
-
-  async scrape(url: string): Promise<string> {
-    const browser = await this.ensureBrowser()
-
-    // Reset keptAlive after each call to the DO
-    this.ensureKeepAlive()
-
-    const page = await browser.newPage()
-
-    await page.goto(url, { waitUntil: "networkidle0" })
-
-    const html = await page.content()
-
-    const markdown = this.getMarkdown(html)
-
-    await this.env.CACHE.put(`scrape:${url}`, markdown, {
-      expirationTtl: 60 * 60 * 24, // One day
-    })
-
-    await page.close()
-
-    // Reset keptAlive after performing tasks to the DO.
-    this.ensureKeepAlive()
-
-    // set the first alarm to keep DO alive
-    this.ensureBrowserAlarm()
-
-    return markdown
   }
 
   private getMarkdown(html: string): string {
@@ -142,16 +148,15 @@ export class Browser extends DurableObject<CloudflareBindings> {
   ): Promise<string[]> {
     console.log("Extracting links from:", url)
 
-    const { hostname } = parse(url)
-
     const links = new Set<string>()
 
-    const hrefs = await page.$$eval("a", (anchors) =>
+    const hrefs: string[] = await page.$$eval("a", (anchors) =>
       anchors.map((a) => a.href),
     )
 
     for (const href of hrefs) {
-      if (!href.includes(hostname)) continue
+      if (!href.startsWith(url)) continue
+
       links.add(href)
 
       if (links.size >= limit) break

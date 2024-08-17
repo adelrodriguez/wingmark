@@ -54,7 +54,7 @@ app.post(
     z.object({
       url: z.string().url(),
       callback: z.string().url(),
-      depth: z.number().min(1).max(10).default(1),
+      depth: z.number().min(1).max(3).default(1),
       limit: z.number().min(1).max(100).default(20),
     }),
   ),
