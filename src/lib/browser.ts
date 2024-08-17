@@ -138,18 +138,18 @@ export class Browser extends DurableObject<CloudflareBindings> {
     limit: number,
   ): Promise<string[]> {
     const { hostname } = parse(url)
-    const links = new Set<string>()
 
-    await page.$$eval("a", (anchors) => {
+    return page.$$eval("a", (anchors) => {
+      const links = new Set<string>()
       for (const anchor of anchors) {
-        if (!anchor.href.contains(hostname)) continue
+        if (!anchor.href.includes(hostname)) continue
         links.add(anchor.href)
 
         if (links.size >= limit) break
       }
-    })
 
-    return [...links]
+      return [...links]
+    })
   }
 
   private async ensureBrowser(): Promise<PuppeteerBrowser> {
@@ -232,9 +232,6 @@ export class Browser extends DurableObject<CloudflareBindings> {
         `Browser DO: has been kept alive for ${this.keptAliveInSeconds} seconds. Extending lifespan.`,
       )
       await this.storage.setAlarm(Date.now() + 10 * 1000)
-      // You could ensure the ws connection is kept alive by requesting something
-      // or just let it close automatically when there  is no work to be done
-      // for example, `await this.browser.version()`
     } else {
       console.log(
         `Browser DO: exceeded life of ${this.KEEP_BROWSER_ALIVE_IN_SECONDS}s.`,
