@@ -2,6 +2,8 @@ import { zValidator } from "@hono/zod-validator"
 import { Hono } from "hono"
 import { StatusCodes } from "http-status-codes"
 import { z } from "zod"
+import { bearerAuth } from "hono/bearer-auth"
+import { env } from "hono/adapter"
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
 
@@ -60,6 +62,13 @@ app.post(
       ignore_pattern: z.string().regex(/.*/),
     }),
   ),
+  bearerAuth({
+    verifyToken: async (token, c) => {
+      const CRAWL_TOKEN = env<{ CRAWL_TOKEN: string }>(c, "workerd").CRAWL_TOKEN
+
+      return token === CRAWL_TOKEN
+    },
+  }),
   async (c) => {
     const { url, callback, depth, limit } = c.req.valid("json")
 
