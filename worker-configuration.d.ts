@@ -5,7 +5,8 @@ interface CloudflareBindings {
   CACHE: KVNamespace
   BROWSER: DurableObjectNamespace<import("./src/index").Browser>
   CRAWLER: Queue<{
-    url: string
+    currentUrl: string
+    originalUrl: string
     currentDepth: number
     maxDepth: number
     limit: number

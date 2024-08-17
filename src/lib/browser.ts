@@ -26,104 +26,99 @@ export class Browser extends DurableObject<CloudflareBindings> {
   async scrape(url: string): Promise<string> {
     const browser = await this.ensureBrowser()
 
-    // Reset keptAlive after each call to the DO
     this.ensureKeepAlive()
 
     const page = await browser.newPage()
 
-    await page.goto(url, { waitUntil: "networkidle0" })
+    try {
+      await page.goto(url, { waitUntil: "networkidle0" })
 
-    const html = await page.content()
+      const html = await page.content()
 
-    const markdown = this.getMarkdown(html)
+      const markdown = this.getMarkdown(html)
 
-    await this.env.CACHE.put(`scrape:${url}`, markdown, {
-      expirationTtl: 60 * 60, // One hour
-    })
+      await this.env.CACHE.put(`scrape:${url}`, markdown, {
+        expirationTtl: 60 * 60, // One hour
+      })
 
-    await page.close()
-
-    // Reset keptAlive after performing tasks to the DO.
-    this.ensureKeepAlive()
-
-    // set the first alarm to keep DO alive
-    this.ensureBrowserAlarm()
-
-    return markdown
+      return markdown
+    } finally {
+      await page.close()
+      this.ensureKeepAlive()
+      this.ensureBrowserAlarm()
+    }
   }
 
   async crawl({
-    url,
+    currentUrl,
+    originalUrl,
     callback,
     currentDepth = 0,
     maxDepth,
     limit,
   }: {
-    url: string
+    currentUrl: string
+    originalUrl: string
     callback: string
     maxDepth: number
     currentDepth: number
     limit: number
   }): Promise<void> {
-    console.log("Crawling:", url)
+    console.log("Crawling:", currentUrl)
     console.log("Current depth:", currentDepth)
 
-    if (currentDepth >= maxDepth) {
+    if (currentDepth > maxDepth) {
       console.log("Crawling depth reached:", maxDepth)
       return
     }
 
-    // Reset keptAlive after each call to the DO
     this.ensureKeepAlive()
 
     const browser = await this.ensureBrowser()
     const page = await browser.newPage()
 
-    await page.goto(url, { waitUntil: "networkidle0" })
+    try {
+      await page.goto(currentUrl, { waitUntil: "networkidle0" })
 
-    const links = await this.extractLinks(page, url, limit)
+      const links = await this.extractLinks(page, originalUrl, limit)
 
-    for (const link of links) {
-      console.log("Queueing link:", link)
+      for (const link of links) {
+        console.log("Queueing link:", link)
 
-      this.env.CRAWLER.send({
-        url: link,
-        currentDepth: currentDepth + 1,
-        maxDepth,
-        limit,
-        callback,
-      })
+        this.env.CRAWLER.send({
+          currentUrl: link,
+          originalUrl,
+          currentDepth: currentDepth + 1,
+          maxDepth,
+          limit,
+          callback,
+        })
+      }
+
+      const html = await page.content()
+
+      let markdown = await this.env.CACHE.get(`scrape:${currentUrl}`)
+
+      if (!markdown) {
+        markdown = this.getMarkdown(html)
+
+        await this.env.CACHE.put(`scrape:${currentUrl}`, markdown, {
+          expirationTtl: 60 * 60, // One hour
+        })
+      }
+
+      await this.env.CALLBACKS.send({ callback, markdown })
+    } finally {
+      await page.close()
+      this.ensureKeepAlive()
+      this.ensureBrowserAlarm()
     }
-
-    const html = await page.content()
-
-    let markdown = await this.env.CACHE.get(`scrape:${url}`)
-
-    if (!markdown) {
-      markdown = await this.getMarkdown(html)
-
-      await this.env.CACHE.put(`scrape:${url}`, markdown, {
-        expirationTtl: 60 * 60, // One hour
-      })
-    }
-
-    await this.env.CALLBACKS.send({ callback, markdown })
-
-    await page.close()
-
-    // Reset keptAlive after performing tasks to the DO.
-    this.ensureKeepAlive()
-
-    // set the first alarm to keep DO alive
-    this.ensureBrowserAlarm()
   }
 
   private getMarkdown(html: string): string {
     const { document } = parseHTML(html)
 
     const reader = new Readability(document, {
-      // We use this serializer to return another DOM element so it can be
-      // parsed by turndown
       serializer: (el) => el,
       nbTopCandidates: 500,
       charThreshold: 0,
@@ -136,9 +131,7 @@ export class Browser extends DurableObject<CloudflareBindings> {
 
     const turndownService = new TurndownService({ hr: "---" })
 
-    const markdown = turndownService.turndown(article.content)
-
-    return markdown
+    return turndownService.turndown(article.content)
   }
 
   private async extractLinks(
@@ -180,17 +173,18 @@ export class Browser extends DurableObject<CloudflareBindings> {
 
         return this.browser
       } catch (error) {
-        console.log(
+        console.error(
           "Browser DO: Could not start browser instance. Error:",
           error,
         )
-        console.log("Retries left:", retries)
+        console.log("Retries left:", this.MAX_RETRIES - retries - 1)
 
         await this.closeBrowserSessions()
 
-        await new Promise((resolve) => setTimeout(resolve, 1000 * retries))
+        await new Promise((resolve) =>
+          setTimeout(resolve, 1000 * (retries + 1)),
+        )
 
-        console.log
         retries++
       }
     }
@@ -199,27 +193,30 @@ export class Browser extends DurableObject<CloudflareBindings> {
   }
 
   private async closeBrowserSessions() {
-    // @ts-expect-error - Seems there was a breaking change in the types for
-    // the browser. Needs more investigation or wait for a fix.
-    const sessions = await puppeteer.sessions(this.env.MY_BROWSER)
+    try {
+      // @ts-expect-error - Seems there was a breaking change in the types for
+      // the browser. Needs more investigation or wait for a fix.
+      const sessions = await puppeteer.sessions(this.env.MY_BROWSER)
 
-    for (const session of sessions) {
-      const [error, browser] = await until(() =>
-        // @ts-expect-error - Seems there was a breaking change in the types for
-        // the browser. Needs more investigation or wait for a fix.
-        puppeteer.connect(this.env.MY_BROWSER, session.sessionId),
-      )
-
-      if (error) {
-        console.log(
-          "Browser DO: Could not close browser session. Error:",
-          error,
+      for (const session of sessions) {
+        const [error, browser] = await until(() =>
+          // @ts-expect-error - Seems there was a breaking change in the types for
+          // the browser. Needs more investigation or wait for a fix.
+          puppeteer.connect(this.env.MY_BROWSER, session.sessionId),
         )
 
-        return
-      }
+        if (error) {
+          console.error(
+            "Browser DO: Could not close browser session. Error:",
+            error,
+          )
+          continue
+        }
 
-      await browser.close()
+        await browser.close()
+      }
+    } catch (error) {
+      console.error("Error closing browser sessions:", error)
     }
   }
 
@@ -234,14 +231,13 @@ export class Browser extends DurableObject<CloudflareBindings> {
     }
   }
 
-  private async ensureKeepAlive() {
+  private ensureKeepAlive() {
     this.keptAliveInSeconds = 0
   }
 
   async alarm() {
     this.keptAliveInSeconds += 10
 
-    // Extend browser DO life
     if (this.keptAliveInSeconds < this.KEEP_BROWSER_ALIVE_IN_SECONDS) {
       console.log(
         `Browser DO: has been kept alive for ${this.keptAliveInSeconds} seconds. Extending lifespan.`,
