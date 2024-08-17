@@ -131,7 +131,11 @@ export class Browser extends DurableObject<CloudflareBindings> {
 
     const turndownService = new TurndownService({ hr: "---" })
 
-    return turndownService.turndown(article.content)
+    let markdown = turndownService.turndown(article.content)
+
+    markdown = `Ttile: ${article.title}\n\n${markdown}`
+
+    return markdown
   }
 
   private async extractLinks(
