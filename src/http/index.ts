@@ -51,16 +51,6 @@ app.post(
 
 app.post(
   "/crawl",
-  zValidator(
-    "json",
-    z.object({
-      url: z.string().url(),
-      callback: z.string().url(),
-      depth: z.number().min(1).max(3).default(1),
-      limit: z.number().min(1).max(100).default(20),
-      ignore_pattern: z.string().regex(/.*/),
-    }),
-  ),
   bearerAuth({
     verifyToken: async (token, c) => {
       const CRAWL_TOKEN = env<{ CRAWL_TOKEN: string }>(c, "workerd").CRAWL_TOKEN
@@ -68,6 +58,16 @@ app.post(
       return token === CRAWL_TOKEN
     },
   }),
+  zValidator(
+    "json",
+    z.object({
+      url: z.string().url(),
+      callback: z.string().url(),
+      depth: z.number().min(1).max(3).default(1),
+      limit: z.number().min(1).max(100).default(20),
+      ignore_pattern: z.array(z.string().regex(/.*/)).default([]),
+    }),
+  ),
   async (c) => {
     const { url, callback, depth, limit } = c.req.valid("json")
 
