@@ -144,21 +144,22 @@ export class Browser extends DurableObject<CloudflareBindings> {
 
     const { hostname } = parse(url)
 
-    const foundLinks = await page.$$eval("a", (anchors) => {
-      const links = new Set<string>()
-      for (const anchor of anchors) {
-        if (!anchor.href.includes(hostname)) continue
-        links.add(anchor.href)
+    const links = new Set<string>()
 
-        if (links.size >= limit) break
-      }
+    const hrefs = await page.$$eval("a", (anchors) =>
+      anchors.map((a) => a.href),
+    )
 
-      return [...links]
-    })
+    for (const href of hrefs) {
+      if (!href.includes(hostname)) continue
+      links.add(href)
 
-    console.log("Found links:", foundLinks)
+      if (links.size >= limit) break
+    }
 
-    return foundLinks
+    console.log("Found links:", links.size)
+
+    return [...links]
   }
 
   private async ensureBrowser(): Promise<PuppeteerBrowser> {
