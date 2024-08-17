@@ -1,8 +1,8 @@
 import { zValidator } from "@hono/zod-validator"
 import { Hono } from "hono"
 import { StatusCodes } from "http-status-codes"
+import ky from "ky"
 import { z } from "zod"
-import { queueHandler } from "@/lib/queues"
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
 
@@ -69,7 +69,7 @@ app.post(
       limit,
     })
 
-    return c.status(StatusCodes.ACCEPTED)
+    return c.text("Received", { status: StatusCodes.ACCEPTED })
   },
 )
 
@@ -77,5 +77,37 @@ export { Browser } from "@/lib/browser"
 
 export default {
   fetch: app.fetch,
-  queue: queueHandler,
+  queue: async (batch, env) => {
+    console.log("Handling queue batch:", batch.queue)
+
+    if (batch.queue === "wingmark-crawler") {
+      const id = env.BROWSER.idFromName("browser")
+      const browser = env.BROWSER.get(id)
+
+      for (const message of batch.messages) {
+        await browser.crawl(
+          message.body as Parameters<typeof env.CRAWLER.send>[0],
+        )
+
+        await message.ack()
+      }
+
+      return
+    }
+
+    if (batch.queue === "wingmark-callbacks") {
+      for (const message of batch.messages) {
+        const body = message.body as Parameters<typeof env.CALLBACKS.send>[0]
+        console.log("Posting to callback:", body.callback)
+
+        await ky.post(body.callback, { body: body.markdown, retry: 3 })
+
+        await message.ack()
+      }
+
+      return
+    }
+
+    throw new Error(`Unknown queue: ${batch.queue}`)
+  },
 } satisfies ExportedHandler<CloudflareBindings>

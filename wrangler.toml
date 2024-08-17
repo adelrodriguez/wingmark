@@ -58,6 +58,8 @@ queue = "wingmark-callbacks"
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/#queues
 [[queues.consumers]]
 queue = "wingmark-crawler"
+max_batch_timeout = 2
 
 [[queues.consumers]]
 queue = "wingmark-callbacks"
+max_batch_timeout = 20

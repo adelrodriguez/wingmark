@@ -37,7 +37,10 @@ export class Browser extends DurableObject<CloudflareBindings> {
     currentDepth: number
     limit: number
   }): Promise<void> {
-    if (currentDepth >= maxDepth) return
+    if (currentDepth >= maxDepth) {
+      console.log("Crawling depth reached:", maxDepth)
+      return
+    }
 
     // Reset keptAlive after each call to the DO
     this.ensureKeepAlive()
@@ -49,17 +52,17 @@ export class Browser extends DurableObject<CloudflareBindings> {
 
     const links = await this.extractLinks(page, url, limit)
 
-    this.env.CRAWLER.sendBatch(
-      links.map((link) => ({
-        body: {
-          url: link,
-          currentDepth: currentDepth + 1,
-          maxDepth,
-          limit,
-          callback,
-        },
-      })),
-    )
+    for (const link of links) {
+      console.log("Queueing link:", link)
+
+      this.env.CRAWLER.send({
+        url: link,
+        currentDepth: currentDepth + 1,
+        maxDepth,
+        limit,
+        callback,
+      })
+    }
 
     const html = await page.content()
 
@@ -137,9 +140,11 @@ export class Browser extends DurableObject<CloudflareBindings> {
     url: string,
     limit: number,
   ): Promise<string[]> {
+    console.log("Extracting links from:", url)
+
     const { hostname } = parse(url)
 
-    return page.$$eval("a", (anchors) => {
+    const foundLinks = await page.$$eval("a", (anchors) => {
       const links = new Set<string>()
       for (const anchor of anchors) {
         if (!anchor.href.includes(hostname)) continue
@@ -150,6 +155,10 @@ export class Browser extends DurableObject<CloudflareBindings> {
 
       return [...links]
     })
+
+    console.log("Found links:", foundLinks)
+
+    return foundLinks
   }
 
   private async ensureBrowser(): Promise<PuppeteerBrowser> {
