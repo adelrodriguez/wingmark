@@ -15,12 +15,11 @@ app.post(
     "json",
     z.object({
       url: z.string().url(),
-      cache_enabled: z.enum(["true", "false"]).default("true"),
+      cache_enabled: z.boolean().default(true),
     }),
   ),
   async (c) => {
-    const { url, cache_enabled } = c.req.valid("json")
-    const cacheEnabled = cache_enabled === "true"
+    const { url, cache_enabled: cacheEnabled } = c.req.valid("json")
 
     console.log("Scraping", url)
     console.log("Cache enabled:", cacheEnabled)
