@@ -2,26 +2,27 @@ import { zValidator } from "@hono/zod-validator"
 import { Hono } from "hono"
 import { StatusCodes } from "http-status-codes"
 import { z } from "zod"
+import { queueHandler } from "@/lib/queues"
 
 const app = new Hono<{ Bindings: CloudflareBindings }>()
 
-app.get(
+app.post(
   "/scrape",
   zValidator(
-    "query",
+    "json",
     z.object({
       url: z.string().url(),
-      // crawl: z.enum(["true", "false"]).default("false"),
-      cache: z.enum(["true", "false"]).default("true"),
+      cache_enabled: z.enum(["true", "false"]).default("true"),
     }),
   ),
   async (c) => {
-    const { url, cache } = c.req.valid("query")
+    const { url, cache_enabled } = c.req.valid("json")
+    const cacheEnabled = cache_enabled === "true"
 
     console.log("Scraping", url)
-    console.log("Cache enabled:", cache)
+    console.log("Cache enabled:", cacheEnabled)
 
-    if (cache === "true") {
+    if (cacheEnabled) {
       const cached = await c.env.CACHE.get(`scrape:${url}`)
 
       if (cached) {
@@ -36,10 +37,6 @@ app.get(
 
     const markdown = await browser.scrape(url)
 
-    c.env.CACHE.put(`scrape:${url}`, markdown, {
-      expirationTtl: 60 * 60 * 24, // One day
-    })
-
     if (!markdown) {
       return c.text("Error: No response from scrape", {
         status: StatusCodes.INTERNAL_SERVER_ERROR,
@@ -50,5 +47,38 @@ app.get(
   },
 )
 
+app.post(
+  "/crawl",
+  zValidator(
+    "json",
+    z.object({
+      url: z.string().url(),
+      callback: z.string().url(),
+      depth: z.number().min(1).max(10).default(1),
+      limit: z.number().min(1).max(100).default(20),
+    }),
+  ),
+  async (c) => {
+    const { url, callback, depth, limit } = c.req.valid("json")
+
+    const id = c.env.BROWSER.idFromName("browser")
+    const browser = c.env.BROWSER.get(id)
+
+    await browser.crawl({
+      url,
+      callback,
+      maxDepth: depth,
+      currentDepth: 0,
+      limit,
+    })
+
+    return c.status(StatusCodes.ACCEPTED)
+  },
+)
+
 export { Browser } from "@/lib/browser"
-export default app
+
+export default {
+  fetch: app.fetch,
+  queue: queueHandler,
+} satisfies ExportedHandler<CloudflareBindings>

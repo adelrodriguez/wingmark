@@ -1,4 +1,5 @@
 import puppeteer, {
+  type Page,
   type Browser as PuppeteerBrowser,
 } from "@cloudflare/puppeteer"
 import { DurableObject } from "cloudflare:workers"
@@ -6,10 +7,9 @@ import { BrowserError, ReadabilityError, until } from "@/utils/error"
 import { Readability } from "@mozilla/readability"
 import { parseHTML } from "linkedom"
 import TurndownService from "turndown"
+import { parse } from "tldts"
 
 export class Browser extends DurableObject<CloudflareBindings> {
-  ctx: DurableObjectState
-  env: CloudflareBindings
   keptAliveInSeconds: number
   storage: DurableObjectStorage
   browser?: PuppeteerBrowser | null
@@ -19,14 +19,65 @@ export class Browser extends DurableObject<CloudflareBindings> {
 
   constructor(ctx: DurableObjectState, env: CloudflareBindings) {
     super(ctx, env)
-    this.ctx = ctx
-    this.env = env
-    this.storage = this.ctx.storage
+
+    this.storage = ctx.storage
     this.keptAliveInSeconds = 0
   }
 
-  async fetch() {
-    return new Response("Browser DO: fetch")
+  async crawl({
+    url,
+    callback,
+    currentDepth = 0,
+    maxDepth,
+    limit,
+  }: {
+    url: string
+    callback: string
+    maxDepth: number
+    currentDepth: number
+    limit: number
+  }): Promise<void> {
+    if (currentDepth >= maxDepth) return
+
+    // Reset keptAlive after each call to the DO
+    this.ensureKeepAlive()
+
+    const browser = await this.ensureBrowser()
+    const page = await browser.newPage()
+
+    await page.goto(url, { waitUntil: "networkidle0" })
+
+    const links = await this.extractLinks(page, url, limit)
+
+    this.env.CRAWLER.sendBatch(
+      links.map((link) => ({
+        body: {
+          url: link,
+          currentDepth: currentDepth + 1,
+          maxDepth,
+          limit,
+          callback,
+        },
+      })),
+    )
+
+    const html = await page.content()
+
+    const markdown = await this.getMarkdown(html)
+
+    await this.env.CACHE.put(`scrape:${url}`, markdown, {
+      expirationTtl: 60 * 60 * 24, // One day
+    })
+
+    await this.env.CALLBACKS.send({ callback, markdown })
+
+    await page.close()
+
+    // Reset keptAlive after performing tasks to the DO.
+    this.ensureKeepAlive()
+
+    // set the first alarm to keep DO alive
+    this.ensureBrowserAlarm()
   }
 
   async scrape(url: string): Promise<string> {
@@ -42,6 +93,10 @@ export class Browser extends DurableObject<CloudflareBindings> {
     const html = await page.content()
 
     const markdown = this.getMarkdown(html)
+
+    await this.env.CACHE.put(`scrape:${url}`, markdown, {
+      expirationTtl: 60 * 60 * 24, // One day
+    })
 
     await page.close()
 
@@ -75,6 +130,30 @@ export class Browser extends DurableObject<CloudflareBindings> {
     const markdown = turndownService.turndown(article.content)
 
     return markdown
+  }
+
+  private async extractLinks(
+    page: Page,
+    url: string,
+    limit: number,
+  ): Promise<string[]> {
+    const { hostname } = parse(url)
+    const links = new Set<string>()
+
+    const linksElements = await page.$$("a")
+
+    for (const linkElement of linksElements) {
+      const href = await linkElement.getProperty("href")
+      const link = await href.jsonValue()
+
+      if (!link?.contains(hostname)) continue
+
+      links.add(link)
+
+      if (links.size >= limit) break
+    }
+
+    return [...links]
   }
 
   private async ensureBrowser(): Promise<PuppeteerBrowser> {
