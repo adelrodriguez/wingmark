@@ -11,6 +11,7 @@ interface CloudflareBindings {
     maxDepth: number
     limit: number
     callback: string
+    detailed?: boolean
   }>
   CALLBACKS: Queue<{
     callback: string

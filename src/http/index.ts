@@ -15,11 +15,12 @@ app.post(
     "json",
     z.object({
       url: z.string().url(),
+      detailed: z.boolean().default(false),
       cache_enabled: z.boolean().default(true),
     }),
   ),
   async (c) => {
-    const { url, cache_enabled: cacheEnabled } = c.req.valid("json")
+    const { url, cache_enabled: cacheEnabled, detailed } = c.req.valid("json")
 
     console.log("Scraping", url)
     console.log("Cache enabled:", cacheEnabled)
@@ -37,7 +38,7 @@ app.post(
     const id = c.env.BROWSER.idFromName("browser")
     const browser = c.env.BROWSER.get(id)
 
-    const markdown = await browser.scrape(url)
+    const markdown = await browser.scrape(url, detailed)
 
     if (!markdown) {
       return c.text("Error: No response from scrape", {
@@ -65,19 +66,19 @@ app.post(
       callback: z.string().url(),
       depth: z.number().min(1).max(3).default(1),
       limit: z.number().min(1).max(100).default(20),
+      detailed: z.boolean().default(false),
       ignore_pattern: z.array(z.string().regex(/.*/)).default([]),
     }),
   ),
   async (c) => {
-    const { url, callback, depth, limit } = c.req.valid("json")
+    const { url, depth, ...rest } = c.req.valid("json")
 
     await c.env.CRAWLER.send({
+      ...rest,
       currentUrl: url,
       originalUrl: url,
-      callback,
       maxDepth: depth,
       currentDepth: 0,
-      limit,
     })
 
     return c.text("Received", { status: StatusCodes.ACCEPTED })

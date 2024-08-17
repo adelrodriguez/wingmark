@@ -1,12 +1,18 @@
+import { BrowserError, ReadabilityError, until } from "@/utils/error"
 import puppeteer, {
   type Page,
   type Browser as PuppeteerBrowser,
 } from "@cloudflare/puppeteer"
-import { DurableObject } from "cloudflare:workers"
-import { BrowserError, ReadabilityError, until } from "@/utils/error"
 import { Readability } from "@mozilla/readability"
+import { DurableObject } from "cloudflare:workers"
+import { toHtml } from "hast-util-to-html"
 import { parseHTML } from "linkedom"
+import rehypeParse from "rehype-parse"
+import rehypeRemark from "rehype-remark"
+import remarkStringify from "remark-stringify"
 import TurndownService from "turndown"
+import { unified } from "unified"
+import { remove } from "unist-util-remove"
 
 export class Browser extends DurableObject<CloudflareBindings> {
   keptAliveInSeconds: number
@@ -23,7 +29,7 @@ export class Browser extends DurableObject<CloudflareBindings> {
     this.keptAliveInSeconds = 0
   }
 
-  async scrape(url: string): Promise<string> {
+  async scrape(url: string, detailed?: boolean): Promise<string> {
     const browser = await this.ensureBrowser()
 
     this.ensureKeepAlive()
@@ -35,7 +41,7 @@ export class Browser extends DurableObject<CloudflareBindings> {
 
       const html = await page.content()
 
-      const markdown = this.getMarkdown(html)
+      const markdown = await this.getMarkdown(html, detailed)
 
       await this.env.CACHE.put(`scrape:${url}`, markdown, {
         expirationTtl: 60 * 60, // One hour
@@ -56,6 +62,7 @@ export class Browser extends DurableObject<CloudflareBindings> {
     currentDepth = 0,
     maxDepth,
     limit,
+    detailed,
   }: {
     currentUrl: string
     originalUrl: string
@@ -63,6 +70,7 @@ export class Browser extends DurableObject<CloudflareBindings> {
     maxDepth: number
     currentDepth: number
     limit: number
+    detailed?: boolean
   }): Promise<void> {
     console.log("Crawling:", currentUrl)
     console.log("Current depth:", currentDepth)
@@ -92,6 +100,7 @@ export class Browser extends DurableObject<CloudflareBindings> {
           maxDepth,
           limit,
           callback,
+          detailed,
         })
       }
 
@@ -100,7 +109,7 @@ export class Browser extends DurableObject<CloudflareBindings> {
       let markdown = await this.env.CACHE.get(`scrape:${currentUrl}`)
 
       if (!markdown) {
-        markdown = this.getMarkdown(html)
+        markdown = await this.getMarkdown(html, detailed)
 
         await this.env.CACHE.put(`scrape:${currentUrl}`, markdown, {
           expirationTtl: 60 * 60, // One hour
@@ -115,7 +124,15 @@ export class Browser extends DurableObject<CloudflareBindings> {
     }
   }
 
-  private getMarkdown(html: string): string {
+  private async getMarkdown(html: string, detailed = false): Promise<string> {
+    if (detailed) {
+      return this.getDetailedMarkdown(html)
+    }
+
+    return this.getSummaryMarkdown(html)
+  }
+
+  private getSummaryMarkdown(html: string): string {
     const { document } = parseHTML(html)
 
     const reader = new Readability(document, {
@@ -136,6 +153,34 @@ export class Browser extends DurableObject<CloudflareBindings> {
     markdown = `Ttile: ${article.title}\n\n${markdown}`
 
     return markdown
+  }
+
+  private async getDetailedMarkdown(html: string): Promise<string> {
+    const file = await unified()
+      .use(rehypeParse, { fragment: true })
+      .use(() => (tree) => {
+        // Remove comments
+        remove(tree, "comment")
+      })
+      .use(rehypeRemark, {
+        handlers: {
+          table(state, node) {
+            const value = toHtml(node)
+            state.patch(node, { type: "html", value })
+
+            return { type: "html", value }
+          },
+        },
+      })
+      .use(remarkStringify, {
+        bullet: "-",
+        listItemIndent: "one",
+        strong: "*",
+        emphasis: "_",
+      })
+      .process(html)
+
+    return String(file)
   }
 
   private async extractLinks(
