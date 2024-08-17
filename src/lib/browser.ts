@@ -140,18 +140,14 @@ export class Browser extends DurableObject<CloudflareBindings> {
     const { hostname } = parse(url)
     const links = new Set<string>()
 
-    const linksElements = await page.$$("a")
+    await page.$$eval("a", (anchors) => {
+      for (const anchor of anchors) {
+        if (!anchor.href.contains(hostname)) continue
+        links.add(anchor.href)
 
-    for (const linkElement of linksElements) {
-      const href = await linkElement.getProperty("href")
-      const link = await href.jsonValue()
-
-      if (!link?.contains(hostname)) continue
-
-      links.add(link)
-
-      if (links.size >= limit) break
-    }
+        if (links.size >= limit) break
+      }
+    })
 
     return [...links]
   }

@@ -61,10 +61,7 @@ app.post(
   async (c) => {
     const { url, callback, depth, limit } = c.req.valid("json")
 
-    const id = c.env.BROWSER.idFromName("browser")
-    const browser = c.env.BROWSER.get(id)
-
-    await browser.crawl({
+    await c.env.CRAWLER.send({
       url,
       callback,
       maxDepth: depth,
