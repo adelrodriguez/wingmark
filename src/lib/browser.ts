@@ -150,7 +150,7 @@ export class Browser extends DurableObject<CloudflareBindings> {
 
     let markdown = turndownService.turndown(article.content)
 
-    markdown = `Ttile: ${article.title}\n\n${markdown}`
+    markdown = `# ${article.title}\n\n${markdown}`
 
     return markdown
   }
@@ -161,13 +161,14 @@ export class Browser extends DurableObject<CloudflareBindings> {
       .use(() => (tree) => {
         // Remove comments
         remove(tree, "comment")
+        // Remove script and style tags
+        remove(tree, { tagName: ["script", "style", "img", "table"] })
       })
       .use(rehypeRemark, {
         handlers: {
           table(state, node) {
             const value = toHtml(node)
             state.patch(node, { type: "html", value })
-
             return { type: "html", value }
           },
         },
@@ -177,10 +178,24 @@ export class Browser extends DurableObject<CloudflareBindings> {
         listItemIndent: "one",
         strong: "*",
         emphasis: "_",
+        rule: "-",
+        ruleSpaces: false,
+        fences: true,
       })
       .process(html)
 
-    return String(file)
+    let markdown = String(file)
+
+    // Clean up excessive whitespace
+    markdown = markdown.replace(/\n{3,}/g, "\n\n")
+
+    // Add a title if it exists in the HTML
+    const title = html.match(/<title>(.*?)<\/title>/i)?.[1]
+    if (title) {
+      markdown = `# ${title.trim()}\n\n${markdown}`
+    }
+
+    return markdown
   }
 
   private async extractLinks(
