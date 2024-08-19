@@ -1,5 +1,6 @@
-import { BrowserError, ReadabilityError, until } from "@/utils/error"
+import { BrowserError, ReadabilityError } from "@/utils/error"
 import puppeteer, {
+  type ActiveSession,
   type Page,
   type Browser as PuppeteerBrowser,
 } from "@cloudflare/puppeteer"
@@ -257,30 +258,29 @@ export class Browser extends DurableObject<CloudflareBindings> {
   }
 
   private async closeBrowserSessions() {
+    let sessions: ActiveSession[] = []
+
     try {
       // @ts-expect-error - Seems there was a breaking change in the types for
       // the browser. Needs more investigation or wait for a fix.
-      const sessions = await puppeteer.sessions(this.env.MY_BROWSER)
-
-      for (const session of sessions) {
-        const [error, browser] = await until(() =>
-          // @ts-expect-error - Seems there was a breaking change in the types for
-          // the browser. Needs more investigation or wait for a fix.
-          puppeteer.connect(this.env.MY_BROWSER, session.sessionId),
-        )
-
-        if (error) {
-          console.error(
-            "Browser DO: Could not close browser session. Error:",
-            error,
-          )
-          continue
-        }
-
-        await browser.close()
-      }
+      sessions = await puppeteer.sessions(this.env.MY_BROWSER)
     } catch (error) {
       console.error("Error closing browser sessions:", error)
+    }
+
+    for (const session of sessions) {
+      try {
+        const browser = await puppeteer.connect(
+          // @ts-expect-error - Seems there was a breaking change in the types for
+          // the browser. Needs more investigation or wait for a fix.
+          this.env.MY_BROWSER,
+          session.sessionId,
+        )
+
+        await browser.close()
+      } catch (error) {
+        console.error("Error closing browser session:", error)
+      }
     }
   }
 
