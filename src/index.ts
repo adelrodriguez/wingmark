@@ -1,41 +1,14 @@
-import ky from "ky"
-import app from "@/http"
+import { Hono } from "hono"
+import { StatusCodes } from "http-status-codes"
 
-export { Browser } from "@/lib/browser"
+type Bindings = {
+  [key in keyof CloudflareBindings]: CloudflareBindings[key]
+}
 
-export default {
-  fetch: app.fetch,
-  queue: async (batch, env) => {
-    console.log("Handling queue batch:", batch.queue)
+const app = new Hono<{ Bindings: Bindings }>()
 
-    if (batch.queue === "wingmark-crawler") {
-      const id = env.BROWSER.idFromName("browser")
-      const browser = env.BROWSER.get(id)
+app.get("/", (c) => {
+  return c.text("Hello Wingman!", { status: StatusCodes.OK })
+})
 
-      for (const message of batch.messages) {
-        await browser.crawl(
-          message.body as Parameters<typeof env.CRAWLER.send>[0],
-        )
-
-        await message.ack()
-      }
-
-      return
-    }
-
-    if (batch.queue === "wingmark-callbacks") {
-      for (const message of batch.messages) {
-        const body = message.body as Parameters<typeof env.CALLBACKS.send>[0]
-        console.log("Posting to callback:", body.callback)
-
-        await ky.post(body.callback, { body: body.markdown, retry: 3 })
-
-        await message.ack()
-      }
-
-      return
-    }
-
-    throw new Error(`Unknown queue: ${batch.queue}`)
-  },
-} satisfies ExportedHandler<CloudflareBindings>
+export default app
