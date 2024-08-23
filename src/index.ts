@@ -28,7 +28,17 @@ export default {
         const body = message.body as Parameters<typeof env.CALLBACKS.send>[0]
         console.log("Posting to callback:", body.callback)
 
-        await ky.post(body.callback, { body: body.markdown, retry: 3 })
+        const markdown = await env.CACHE.get(`scrape:${body.url}`)
+
+        if (!markdown) {
+          console.error("No markdown found for", body.url)
+          continue
+        }
+
+        await ky.post(body.callback, {
+          json: { markdown, url: body.url },
+          retry: 3,
+        })
 
         await message.ack()
       }

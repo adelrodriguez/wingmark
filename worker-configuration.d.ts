@@ -15,7 +15,7 @@ interface CloudflareBindings {
   }>
   CALLBACKS: Queue<{
     callback: string
-    markdown: string
+    url: string
   }>
   MY_BROWSER: Fetcher
 }

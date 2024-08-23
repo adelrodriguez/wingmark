@@ -117,7 +117,7 @@ export class Browser extends DurableObject<CloudflareBindings> {
         })
       }
 
-      await this.env.CALLBACKS.send({ callback, markdown })
+      await this.env.CALLBACKS.send({ callback, url: currentUrl })
     } finally {
       await page.close()
       this.ensureKeepAlive()
