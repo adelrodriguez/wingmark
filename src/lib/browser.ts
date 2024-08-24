@@ -213,7 +213,9 @@ export class Browser extends DurableObject<CloudflareBindings> {
     )
 
     for (const href of hrefs) {
-      if (!href.startsWith(url)) continue
+      const isValid =
+        href.startsWith(url) && !href.replace(url, "").startsWith("#")
+      if (!isValid) continue
 
       links.add(href)
 
