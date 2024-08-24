@@ -20,6 +20,17 @@ describe("isValidChildUrl", () => {
     ).toBe(false)
   })
 
+  it("should return true if the child is a pathname", () => {
+    expect(checkIsValidChildUrl("https://example.com", "/subpath")).toBe(true)
+    expect(checkIsValidChildUrl("https://example.com/", "/subpath")).toBe(true)
+    expect(
+      checkIsValidChildUrl("https://example.com/path/to/page", "subpath"),
+    ).toBe(false)
+    expect(
+      checkIsValidChildUrl("https://example.com/path/to/page/", "/subpath"),
+    ).toBe(true)
+  })
+
   it("should return false for a URL that is not a child URL", () => {
     expect(
       checkIsValidChildUrl(
