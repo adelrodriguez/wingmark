@@ -1,4 +1,5 @@
 import { BrowserError, ReadabilityError } from "@/utils/error"
+import { checkIsValidChildUrl } from "@/utils/url"
 import puppeteer, {
   type ActiveSession,
   type Page,
@@ -204,8 +205,6 @@ export class Browser extends DurableObject<CloudflareBindings> {
     url: string,
     limit: number,
   ): Promise<string[]> {
-    console.log("Extracting links from:", url)
-
     const links = new Set<string>()
 
     const hrefs: string[] = await page.$$eval("a", (anchors) =>
@@ -213,8 +212,8 @@ export class Browser extends DurableObject<CloudflareBindings> {
     )
 
     for (const href of hrefs) {
-      const isValid =
-        href.startsWith(url) && !href.replace(url, "").startsWith("#")
+      const isValid = checkIsValidChildUrl(url, href)
+
       if (!isValid) continue
 
       links.add(href)
